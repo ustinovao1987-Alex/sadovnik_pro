@@ -1,14 +1,16 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../data/cities.dart';
 import '../data/crop_care_data.dart';
 import '../data/crops_data.dart';
 import '../data/planting_calendar.dart';
 import '../utils/moon_utils.dart';
+import '../widgets/add_reminder_sheet.dart';
 import 'care_screen.dart';
 import 'city_picker_screen.dart';
 import 'problems_screen.dart';
 import 'reminders_screen.dart';
+import '../data/climate_engine.dart';
 
 class CropDetailScreen extends StatefulWidget {
   final Crop crop;
@@ -313,12 +315,13 @@ class _CropDetailScreenState extends State<CropDetailScreen> {
               child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Row(children: [
-                      Icon(Icons.calendar_month, color: Colors.blueGrey),
-                      SizedBox(width: 8),
+                    Row(children: [
+                      const Icon(Icons.calendar_month, color: Colors.blueGrey),
+                      const SizedBox(width: 8),
                       Expanded(
-                          child: Text('Календарь посадок • $kRegionName',
-                              style: TextStyle(
+                          child: Text(
+                              'Календарь посадок • ${ClimateEngine.currentRegionName()}',
+                              style: const TextStyle(
                                   fontSize: 16, fontWeight: FontWeight.bold))),
                     ]),
                     const SizedBox(height: 12),
@@ -337,14 +340,38 @@ class _CropDetailScreenState extends State<CropDetailScreen> {
                     ],
                     const SizedBox(height: 8),
                     Text(
-                        'Ориентиры региона: последние весенние заморозки ~$kLastSpringFrost, '
-                        'первые осенние ~$kFirstAutumnFrost. Сроки могут сдвигаться на 1–2 недели. '
+                        'Ориентиры региона: ${ClimateEngine.currentFrostPeriodText()}. '
+                        'Сроки могут сдвигаться на 1–2 недели. '
                         'Лунные подсказки — народная традиция; решают температура почвы и погода.',
                         style: TextStyle(
                             fontSize: 12,
                             color: Colors.grey[600],
                             height: 1.4)),
                   ]),
+            ),
+            const SizedBox(height: 20),
+
+            // 🔔 Кнопка «Напомнить о посадке»
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () => showAddReminderSheet(
+                  context,
+                  initialCropName: widget.crop.name,
+                  initialCropEmoji: widget.crop.emoji,
+                ),
+                icon: const Icon(Icons.notifications_active),
+                label: const Text('Напомнить о посадке'),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 14),
+                  textStyle: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.w600),
+                  side: BorderSide(
+                    color: Theme.of(context).colorScheme.primary,
+                    width: 1.5,
+                  ),
+                ),
+              ),
             ),
             const SizedBox(height: 20),
 

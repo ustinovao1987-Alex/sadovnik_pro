@@ -9,10 +9,13 @@ import 'package:geolocator/geolocator.dart';
 import '../data/cities.dart';
 
 class LocationService {
-  // Политика OpenStreetMap требует идентифицирующий User-Agent.
-  // ЗАМЕНИТЕ email ниже на свой реальный — это требование сервиса Nominatim.
+  // ⚠️ ВАЖНО: замените email ниже на свой реальный.
+  // Это требование политики OpenStreetMap Nominatim.
+  static const String _contactEmail = 'Ustinov.a.o1987@gmail.com';
+
+  // User-Agent должен содержать название приложения и контакт.
   static const String _userAgent =
-      'SadovnikPro/0.1 (Flutter gardening app; contact: your-email@example.com)';
+      'SadovnikPro/1.0 (Flutter gardening app; contact: $_contactEmail)';
 
   static DateTime? _lastNominatimRequest;
 
@@ -53,7 +56,7 @@ class LocationService {
 
     if (geo != null && geo['settlement']!.isNotEmpty) {
       name = geo['settlement']!;
-      region = geo['region']!.isNotEmpty ? geo['region']! : 'Самарская область';
+      region = geo['region']!.isNotEmpty ? geo['region']! : 'Ваш регион';
       district =
           geo['district']!.isNotEmpty ? geo['district']! : 'Определено по GPS';
       debugPrint('🏷️ OSM определил: "$name", район: "$district"');
@@ -143,7 +146,7 @@ class LocationService {
   }
 
   /// Обратное геокодирование через Nominatim (OpenStreetMap).
-  /// Без API-ключей. Соблюдаем политику: User-Agent + не чаще 1 запроса/сек.
+  /// Без API-ключей. Соблюдаем политику: User-Agent + email + не чаще 1 запроса/сек.
   static Future<Map<String, String>?> _reverseGeocode(
       double lat, double lon) async {
     // Лимит: не чаще 1 запроса в секунду (требование Nominatim)
@@ -157,15 +160,20 @@ class LocationService {
 
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 6);
     try {
+      // ✅ Добавлен параметр &email= для соответствия политике Nominatim
       final uri = Uri.parse(
         'https://nominatim.openstreetmap.org/reverse'
-        '?format=jsonv2&lat=$lat&lon=$lon&zoom=14&accept-language=ru',
+        '?format=jsonv2&lat=$lat&lon=$lon&zoom=14'
+        '&accept-language=ru&email=${Uri.encodeComponent(_contactEmail)}',
       );
       debugPrint('🌍 Запрос названия к OpenStreetMap...');
       final request =
           await client.getUrl(uri).timeout(const Duration(seconds: 8));
+
+      // ✅ Устанавливаем все требуемые заголовки ДО close()
       request.headers.set(HttpHeaders.userAgentHeader, _userAgent);
       request.headers.set(HttpHeaders.acceptLanguageHeader, 'ru');
+      request.headers.set(HttpHeaders.refererHeader, 'https://sadovnik.pro/');
 
       final response =
           await request.close().timeout(const Duration(seconds: 8));

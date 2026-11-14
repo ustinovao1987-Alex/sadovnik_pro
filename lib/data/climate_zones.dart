@@ -1,22 +1,20 @@
 import 'region_profile.dart';
 
-/// Определение климатической зоны по координатам
-/// Используется для коррекции календаря и рекомендаций
 enum ClimateZone {
-  arctic, // Арктическая
-  subarctic, // Субарктическая (Мурманск, Норильск)
-  temperate, // Умеренная (большая часть РФ, РБ, КЗ)
-  continental, // Резко континентальная (Сибирь)
-  subtropical, // Субтропическая (Сочи, Крым)
+  arctic,
+  subarctic,
+  temperate,
+  continental,
+  subtropical,
 }
 
 class ClimateZoneInfo {
   final ClimateZone zone;
   final String name;
   final String description;
-  final int growingSeasonDays; // дней вегетационного периода
-  final double minTemp; // минимальная зимняя температура
-  final double maxTemp; // максимальная летняя температура
+  final int growingSeasonDays;
+  final double minTemp;
+  final double maxTemp;
 
   const ClimateZoneInfo({
     required this.zone,
@@ -33,7 +31,7 @@ class ClimateZoneInfo {
         return const ClimateZoneInfo(
           zone: ClimateZone.arctic,
           name: 'Арктическая',
-          description: 'Короткое лето, длинная зима. Открытый грунт ограничен.',
+          description: 'Короткое лето. Открытый грунт ограничен.',
           growingSeasonDays: 60,
           minTemp: -40,
           maxTemp: 15,
@@ -51,8 +49,7 @@ class ClimateZoneInfo {
         return const ClimateZoneInfo(
           zone: ClimateZone.temperate,
           name: 'Умеренная',
-          description:
-              'Классический умеренный климат. Подходят большинство культур.',
+          description: 'Классический умеренный климат.',
           growingSeasonDays: 130,
           minTemp: -25,
           maxTemp: 32,
@@ -70,7 +67,7 @@ class ClimateZoneInfo {
         return const ClimateZoneInfo(
           zone: ClimateZone.subtropical,
           name: 'Субтропическая',
-          description: 'Мягкая зима, длинный сезон. Теплолюбивые культуры.',
+          description: 'Мягкая зима, длинный сезон.',
           growingSeasonDays: 220,
           minTemp: -5,
           maxTemp: 40,
@@ -80,82 +77,80 @@ class ClimateZoneInfo {
 }
 
 class ClimateZoneDetector {
-  /// Определяет климатическую зону по координатам и профилю региона
   static ClimateZone detect({
     required double latitude,
     required double longitude,
     RegionProfile? profile,
   }) {
-    // Арктика
-    if (latitude > 66.5) {
-      return ClimateZone.arctic;
-    }
+    if (latitude > 66.5) return ClimateZone.arctic;
+    if (latitude > 60) return ClimateZone.subarctic;
 
-    // Субарктика (севернее 60°)
-    if (latitude > 60) {
-      return ClimateZone.subarctic;
-    }
-
-    // Субтропики (южнее 45° и определенные регионы)
     if (latitude < 45) {
-      // Проверка на Черноморское побережье
       if (latitude > 43 && latitude < 45 && longitude > 37 && longitude < 41) {
         return ClimateZone.subtropical; // Сочи, Крым
       }
-      // Средняя Азия (Узбекистан, Южный Казахстан)
       if (latitude < 44 && longitude > 65 && longitude < 77) {
-        return ClimateZone.subtropical;
+        return ClimateZone.subtropical; // Южный Казахстан, Узбекистан
       }
     }
-
-    // Резко континентальный климат (Сибирь, восток)
     if (longitude > 80 && latitude > 50 && latitude < 60) {
-      return ClimateZone.continental;
+      return ClimateZone.continental; // Сибирь
     }
-
-    // Умеренный климат (по умолчанию для большинства регионов)
     return ClimateZone.temperate;
   }
 
-  /// Корректирует даты заморозков на основе климатической зоны
+  /// ✅ ИСПРАВЛЕНО: смещения применяются через DateTime,
+  /// поэтому «40 октября» автоматически превращается в «9 ноября».
   static RegionProfile adjustProfile(
     RegionProfile baseProfile,
     ClimateZone zone,
   ) {
-    int springOffset = 0;
-    int autumnOffset = 0;
+    int springOffsetDays = 0;
+    int autumnOffsetDays = 0;
 
     switch (zone) {
       case ClimateZone.arctic:
-        springOffset = 30; // +30 дней к весенним заморозкам
-        autumnOffset = -30; // -30 дней к осенним
+        springOffsetDays = 30;
+        autumnOffsetDays = -30;
         break;
       case ClimateZone.subarctic:
-        springOffset = 15;
-        autumnOffset = -15;
+        springOffsetDays = 15;
+        autumnOffsetDays = -15;
         break;
       case ClimateZone.continental:
-        springOffset = 10;
-        autumnOffset = -10;
+        springOffsetDays = 10;
+        autumnOffsetDays = -10;
         break;
       case ClimateZone.subtropical:
-        springOffset = -20; // раньше на 20 дней
-        autumnOffset = 20; // позже на 20 дней
+        springOffsetDays = -20;
+        autumnOffsetDays = 20;
         break;
       case ClimateZone.temperate:
-        // Без корректировки
         break;
     }
+
+    // ✅ Нормализация через DateTime (год берём условный, важен только месяц/день)
+    const int y = 2025;
+    final springDate = DateTime(
+            y, baseProfile.lastSpringFrostMonth, baseProfile.lastSpringFrostDay)
+        .add(Duration(days: springOffsetDays));
+    final autumnDate = DateTime(y, baseProfile.firstAutumnFrostMonth,
+            baseProfile.firstAutumnFrostDay)
+        .add(Duration(days: autumnOffsetDays));
 
     return RegionProfile(
       id: '${baseProfile.id}_${zone.name}',
       name: baseProfile.name,
       country: baseProfile.country,
-      lastSpringFrostMonth: baseProfile.lastSpringFrostMonth,
-      lastSpringFrostDay: baseProfile.lastSpringFrostDay + springOffset,
-      firstAutumnFrostMonth: baseProfile.firstAutumnFrostMonth,
-      firstAutumnFrostDay: baseProfile.firstAutumnFrostDay + autumnOffset,
+      lastSpringFrostMonth: springDate.month,
+      lastSpringFrostDay: springDate.day,
+      firstAutumnFrostMonth: autumnDate.month,
+      firstAutumnFrostDay: autumnDate.day,
       timezone: baseProfile.timezone,
+      minLatitude: baseProfile.minLatitude,
+      maxLatitude: baseProfile.maxLatitude,
+      minLongitude: baseProfile.minLongitude,
+      maxLongitude: baseProfile.maxLongitude,
     );
   }
 }

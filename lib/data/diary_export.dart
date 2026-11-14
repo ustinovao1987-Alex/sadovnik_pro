@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -40,8 +39,8 @@ class DiaryExporter {
           '${_typeToString(entry.kind)};'
           '${entry.cropName};'
           '${entry.amount ?? ""};'
-          '${entry.unit ?? ""};'
-          '${entry.note ?? ""}',
+          '${entry.unit};'
+          '${entry.note}',
         );
       }
     }

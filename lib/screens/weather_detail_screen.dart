@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import '../services/weather_service.dart';
 
 class WeatherDetailScreen extends StatefulWidget {
@@ -34,12 +34,12 @@ class _WeatherDetailScreenState extends State<WeatherDetailScreen> {
   }
 
   Future<void> _loadWeather() async {
-    await WeatherService.instance.clearCache();
     setState(() {
       _loading = true;
       _errorMessage = null;
     });
 
+    // НЕ очищаем кэш — если сеть недоступна, хотим использовать старый кэш
     final weather = await WeatherService.instance.fetchAndUpdate(
       latitude: widget.latitude,
       longitude: widget.longitude,
@@ -51,8 +51,7 @@ class _WeatherDetailScreenState extends State<WeatherDetailScreen> {
       _weather = weather;
       _loading = false;
       if (weather == null) {
-        _errorMessage =
-            'Не удалось загрузить погоду. Проверьте интернет-соединение или попробуйте позже.';
+        _errorMessage = 'Не удалось загрузить погоду.';
       }
     });
   }
@@ -68,7 +67,7 @@ class _WeatherDetailScreenState extends State<WeatherDetailScreen> {
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
-            onPressed: _loadWeather,
+            onPressed: _loading ? null : _loadWeather,
           ),
         ],
       ),
@@ -81,9 +80,6 @@ class _WeatherDetailScreenState extends State<WeatherDetailScreen> {
                   const SizedBox(height: 16),
                   Text('Загружаем прогноз...',
                       style: TextStyle(fontSize: 15, color: Colors.grey[700])),
-                  const SizedBox(height: 8),
-                  Text('Проверяем доступность серверов',
-                      style: TextStyle(fontSize: 12, color: Colors.grey[500])),
                 ],
               ),
             )
@@ -166,8 +162,7 @@ class _WeatherDetailScreenState extends State<WeatherDetailScreen> {
                     padding:
                         const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(
-                      color: Colors.white
-                          .withValues(alpha: 0.2), // <-- ИСПРАВЛЕНО ЗДЕСЬ
+                      color: Colors.white.withValues(alpha: 0.2),
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: Text(
@@ -186,6 +181,8 @@ class _WeatherDetailScreenState extends State<WeatherDetailScreen> {
             padding: const EdgeInsets.all(16),
             sliver: SliverList(
               delegate: SliverChildListDelegate([
+                // 🔴 БАННЕР если данные fallback
+                if (w.isFallback) _fallbackBanner(w),
                 if (w.hasFrostWarning) _frostWarningCard(w),
                 if (w.hasHeatWarning) _heatWarningCard(),
                 _currentConditionsCard(w),
@@ -202,6 +199,65 @@ class _WeatherDetailScreenState extends State<WeatherDetailScreen> {
         ],
       ),
     );
+  }
+
+  /// Большой жёлтый баннер: данные не из сети.
+  Widget _fallbackBanner(WeatherData w) {
+    final isSeasonal = w.source == 'Сезонные данные';
+    return Container(
+      margin: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.amber.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(16),
+        border:
+            Border.all(color: Colors.amber.withValues(alpha: 0.6), width: 2),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: Colors.amber.withValues(alpha: 0.3),
+              borderRadius: BorderRadius.circular(13),
+            ),
+            child: const Icon(Icons.warning_amber_rounded,
+                color: Colors.orange, size: 28),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isSeasonal ? '⚠️ Примерные данные' : '⚠️ Устаревшие данные',
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  isSeasonal
+                      ? 'Нет интернета. Показаны сезонные средние — '
+                          'они могут сильно отличаться от реальной погоды. '
+                          'Не используйте для точных решений о поливе.'
+                      : 'Нет интернета. Показаны последние сохранённые данные '
+                          'от ${_formatDate(w.lastUpdated)}. '
+                          'Проверьте реальную погоду перед поливом.',
+                  style: TextStyle(
+                      fontSize: 12.5, color: Colors.grey[800], height: 1.4),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  String _formatDate(DateTime d) {
+    return '${d.day}.${d.month.toString().padLeft(2, '0')}.${d.year} '
+        '${d.hour}:${d.minute.toString().padLeft(2, '0')}';
   }
 
   Widget _frostWarningCard(WeatherData w) {
@@ -571,7 +627,7 @@ class _WeatherDetailScreenState extends State<WeatherDetailScreen> {
         borderRadius: BorderRadius.circular(12),
       ),
       child: const Text(
-        'Данные предоставлены Open-Meteo.com (CC BY 4.0). '
+        'Данные предоставлены Open-Meteo.com. '
         'Температура почвы измеряется на глубине 6 см — это критический '
         'показатель для посева. Большинство культур требуют +12°C для '
         'прорастания семян. Заморозки до −2°C переносят морковь, лук, '

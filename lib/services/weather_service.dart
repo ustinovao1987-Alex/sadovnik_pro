@@ -1,10 +1,12 @@
-import 'dart:convert';
+﻿import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
+
+import '../data/climate_engine.dart';
+import '../data/climate_zones.dart';
 import '../data/irrigation.dart';
 import '../data/region_profile.dart';
-import '../data/climate_zones.dart';
 
 class DailyForecast {
   final DateTime date;
@@ -38,6 +40,7 @@ class WeatherData {
   final DateTime lastUpdated;
   final String locationName;
   final String source;
+  final bool isFallback;
 
   WeatherData({
     required this.currentTemp,
@@ -50,6 +53,7 @@ class WeatherData {
     required this.lastUpdated,
     required this.locationName,
     required this.source,
+    this.isFallback = false,
   });
 
   String get weatherDescription => _codeToText(weatherCode);
@@ -85,6 +89,7 @@ class WeatherData {
       'lastUpdated': lastUpdated.toIso8601String(),
       'locationName': locationName,
       'source': source,
+      'isFallback': isFallback,
     };
   }
 
@@ -113,6 +118,7 @@ class WeatherData {
       lastUpdated: DateTime.parse(json['lastUpdated'] as String),
       locationName: json['locationName'] as String? ?? 'Ваш регион',
       source: json['source'] as String? ?? 'unknown',
+      isFallback: (json['isFallback'] as bool?) ?? false,
     );
   }
 }
@@ -134,41 +140,26 @@ String _codeToText(int code) {
     case 53:
     case 55:
       return 'Морось';
-    case 56:
-    case 57:
-      return 'Ледяная морось';
     case 61:
       return 'Слабый дождь';
     case 63:
       return 'Умеренный дождь';
     case 65:
       return 'Сильный дождь';
-    case 66:
-    case 67:
-      return 'Ледяной дождь';
     case 71:
       return 'Слабый снег';
     case 73:
       return 'Умеренный снег';
     case 75:
       return 'Сильный снег';
-    case 77:
-      return 'Снежные зёрна';
     case 80:
       return 'Слабый ливень';
     case 81:
       return 'Умеренный ливень';
     case 82:
       return 'Сильный ливень';
-    case 85:
-      return 'Слабый снегопад';
-    case 86:
-      return 'Сильный снегопад';
     case 95:
       return 'Гроза';
-    case 96:
-    case 99:
-      return 'Гроза с градом';
     default:
       return 'Облачно';
   }
@@ -195,70 +186,120 @@ class WeatherService {
   static const Duration _cacheDuration = Duration(hours: 3);
   static const String _kLastFetch = 'weather_last_fetch_v6';
   static const String _kLastData = 'weather_last_data_v6';
-  static const String _kTimezone = 'weather_timezone_v1';
 
   WeatherData? _lastData;
   WeatherData? get lastData => _lastData;
 
-  // === Новое: часовой пояс, регион, климатическая зона ===
-  String? _timezone;
   RegionProfile? _regionProfile;
   ClimateZone? _climateZone;
-
-  String? get timezone => _timezone;
   RegionProfile? get regionProfile => _regionProfile;
   ClimateZone? get climateZone => _climateZone;
 
-  Future<WeatherData?> _fetchFromURL(
-      String url, String sourceName, String locationName) async {
-    debugPrint('🌤️ Попытка загрузки из $sourceName...');
-
-    final client = http.Client();
+  void refreshRegionAndClimate(double latitude, double longitude) {
     try {
-      final response = await client.get(Uri.parse(url), headers: {
-        'User-Agent': 'SadovnikPro/1.0',
-        'Accept': 'application/json',
-      }).timeout(const Duration(seconds: 15));
-
-      if (response.statusCode != 200) {
-        debugPrint('⚠️ $sourceName вернул код ${response.statusCode}');
-        return null;
-      }
-
-      final data = jsonDecode(response.body);
-      if (data is! Map<String, dynamic>) {
-        debugPrint('⚠️ Неверный формат ответа $sourceName');
-        return null;
-      }
-
-      final result = _parseOpenMeteoResponse(data, locationName, sourceName);
-      if (result != null) {
-        debugPrint('✅ Успешно загружено из $sourceName');
-      }
-      return result;
-    } catch (e, stack) {
-      debugPrint('❌ Ошибка $sourceName: $e');
-      debugPrint('Stack: $stack');
-      return null;
-    } finally {
-      client.close();
+      _regionProfile = ClimateEngine.resolve(latitude, longitude);
+      _climateZone = ClimateZoneDetector.detect(
+        latitude: latitude,
+        longitude: longitude,
+        profile: _regionProfile,
+      );
+    } catch (e) {
+      debugPrint('⚠️ Регион/климат: $e');
+      _regionProfile = null;
+      _climateZone = null;
     }
+    debugPrint('🌍 Регион: ${_regionProfile?.name ?? "не определён"}');
+    debugPrint('🌡️ Климат: ${_climateZone?.name ?? "не определён"}');
+  }
+
+  String _buildOpenMeteoUrl(double lat, double lon) {
+    return 'https://api.open-meteo.com/v1/forecast?'
+        'latitude=$lat&longitude=$lon'
+        '&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m'
+        '&hourly=temperature_2m,soil_temperature_6cm'
+        '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code'
+        '&temperature_unit=celsius&wind_speed_unit=kmh&precipitation_unit=mm'
+        '&timezone=auto&forecast_days=7';
+  }
+
+  List<String> _proxiesFor(String originalUrl) {
+    return [
+      'https://proxy.cors.dev/$originalUrl',
+      'https://corsproxy.io/?$originalUrl',
+      'https://api.allorigins.win/raw?url=${Uri.encodeComponent(originalUrl)}',
+    ];
+  }
+
+  Future<Map<String, dynamic>?> _fetchJsonWithProxyCascade(
+      String originalUrl) async {
+    final direct =
+        await _tryFetchJson(originalUrl, 'Прямой запрос', retries: 1);
+    if (direct != null) return direct;
+
+    final proxies = _proxiesFor(originalUrl);
+    for (int i = 0; i < proxies.length; i++) {
+      final proxyUrl = proxies[i];
+      final name = 'Прокси #${i + 1} (${Uri.parse(proxyUrl).host})';
+      final result = await _tryFetchJson(proxyUrl, name, retries: 2);
+      if (result != null) {
+        debugPrint('✅ Сработал $name');
+        return result;
+      }
+    }
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> _tryFetchJson(
+    String url,
+    String sourceName, {
+    int retries = 1,
+  }) async {
+    for (int attempt = 1; attempt <= retries; attempt++) {
+      final client = http.Client();
+      try {
+        debugPrint('🌤️ Попытка $attempt/$retries: $sourceName...');
+        final response = await client.get(
+          Uri.parse(url),
+          headers: {
+            'User-Agent': 'SadovnikPro/1.0 (Flutter; Android)',
+            'Accept': 'application/json',
+          },
+        ).timeout(const Duration(seconds: 3));
+
+        if (response.statusCode != 200) {
+          debugPrint('⚠️ $sourceName: HTTP ${response.statusCode}');
+          continue;
+        }
+
+        final body = response.body.trim();
+        if (body.isEmpty || body.startsWith('<')) {
+          debugPrint('⚠️ $sourceName: не JSON');
+          continue;
+        }
+
+        final decoded = jsonDecode(body);
+        if (decoded is! Map<String, dynamic> || decoded['current'] is! Map) {
+          debugPrint('⚠️ $sourceName: нет поля current');
+          continue;
+        }
+
+        debugPrint('✅ $sourceName: успешно');
+        return decoded;
+      } catch (e) {
+        debugPrint('❌ $sourceName (попытка $attempt): $e');
+        if (attempt == retries) return null;
+        await Future.delayed(const Duration(seconds: 2));
+      } finally {
+        client.close();
+      }
+    }
+    return null;
   }
 
   WeatherData? _parseOpenMeteoResponse(
       Map<String, dynamic> data, String locationName, String source) {
     final current = data['current'];
-    if (current is! Map<String, dynamic>) {
-      debugPrint('⚠️ Нет данных о текущей погоде');
-      return null;
-    }
-
-    // ✅ Timezone берём из API — это ТОЧНОЕ значение, а не приближение
-    final apiTimezone = data['timezone'];
-    if (apiTimezone is String && apiTimezone.isNotEmpty) {
-      _timezone = apiTimezone;
-      debugPrint('🕐 Timezone из API: $_timezone');
-    }
+    if (current is! Map<String, dynamic>) return null;
 
     final currentTemp = (current['temperature_2m'] as num?)?.toDouble() ?? 20.0;
     final humidity =
@@ -335,6 +376,7 @@ class WeatherService {
       lastUpdated: DateTime.now(),
       locationName: locationName,
       source: source,
+      isFallback: false,
     );
   }
 
@@ -346,33 +388,7 @@ class WeatherService {
       final prefs = await SharedPreferences.getInstance();
       final locationName = prefs.getString('loc_name') ?? 'Ваш регион';
 
-      // === Автоопределение региона и климатической зоны ===
-      try {
-        _regionProfile = RegionProfiles.findByCoordinates(latitude, longitude);
-        _climateZone = ClimateZoneDetector.detect(
-          latitude: latitude,
-          longitude: longitude,
-          profile: _regionProfile,
-        );
-
-        // ✅ Защита: корректируем только если ОБА не null
-        if (_regionProfile != null && _climateZone != null) {
-          _regionProfile = ClimateZoneDetector.adjustProfile(
-            _regionProfile!,
-            _climateZone!,
-          );
-        }
-
-        debugPrint('🌍 Регион: ${_regionProfile?.name ?? "Не определён"}');
-        debugPrint(
-            '🌡️ Климатическая зона: ${_climateZone?.name ?? "Не определена"}');
-      } catch (e) {
-        // Если файлы region_profile/climate_zones сломаны — не падаем
-        debugPrint('⚠️ Не удалось определить регион: $e');
-        _regionProfile = null;
-        _climateZone = null;
-      }
-      // ==================================================
+      refreshRegionAndClimate(latitude, longitude);
 
       final lastFetchStr = prefs.getString(_kLastFetch);
       final lastDataStr = prefs.getString(_kLastData);
@@ -381,129 +397,201 @@ class WeatherService {
         final lastFetch = DateTime.tryParse(lastFetchStr);
         if (lastFetch != null &&
             DateTime.now().difference(lastFetch) < _cacheDuration) {
-          debugPrint('🌤️ Используем кэшированную погоду');
+          debugPrint('🌤️ Используем свежий кэш');
           final cached = WeatherData.fromJson(
               jsonDecode(lastDataStr) as Map<String, dynamic>);
-
-          // Восстанавливаем timezone из кэша
-          _timezone ??= _regionProfile?.timezone;
-          if (_timezone != null) {
-            debugPrint('🕐 Timezone из RegionProfile: $_timezone');
-          }
-
           _lastData = cached;
           await _updateIrrigationSettings(cached);
           return cached;
         }
       }
 
-      debugPrint('🌤️ Загружаем прогноз для $latitude, $longitude...');
+      debugPrint('🌤️ Загружаем прогноз (каскад прокси)...');
 
-      final params = 'latitude=$latitude&longitude=$longitude'
-          '&current=temperature_2m,relative_humidity_2m,precipitation,weather_code,wind_speed_10m'
-          '&hourly=temperature_2m,soil_temperature_6cm'
-          '&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code'
-          '&temperature_unit=celsius&wind_speed_unit=kmh&precipitation_unit=mm'
-          '&timezone=auto&forecast_days=7';
+      final originalUrl = _buildOpenMeteoUrl(latitude, longitude);
+      final json = await _fetchJsonWithProxyCascade(originalUrl);
 
-      WeatherData? weatherData = await _fetchFromURL(
-        'https://api.open-meteo.com/v1/forecast?$params',
-        'Open-Meteo',
-        locationName,
-      );
+      WeatherData? weatherData;
+      if (json != null) {
+        weatherData = _parseOpenMeteoResponse(json, locationName, 'Open-Meteo');
+      }
 
-      if (weatherData == null) {
-        debugPrint('🔄 Пробуем через CORS proxy...');
-        weatherData = await _fetchFromURL(
-          'https://corsproxy.io/?https://api.open-meteo.com/v1/forecast?$params',
-          'Open-Meteo (CORS)',
-          locationName,
-        );
+      if (weatherData == null && lastDataStr != null) {
+        debugPrint('⚠️ Все прокси упали, используем старый кэш');
+        try {
+          final old = WeatherData.fromJson(
+              jsonDecode(lastDataStr) as Map<String, dynamic>);
+          weatherData = WeatherData(
+            currentTemp: old.currentTemp,
+            soilTemp: old.soilTemp,
+            currentHumidity: old.currentHumidity,
+            windSpeed: old.windSpeed,
+            precipitation: old.precipitation,
+            weatherCode: old.weatherCode,
+            forecast: old.forecast,
+            lastUpdated: old.lastUpdated,
+            locationName: locationName,
+            source: 'Кэш (устаревшие)',
+            isFallback: true,
+          );
+        } catch (e) {
+          debugPrint('⚠️ Ошибка парсинга старого кэша: $e');
+        }
       }
 
       if (weatherData == null) {
-        debugPrint('🔄 Пробуем через allorigins...');
-        weatherData = await _fetchFromURL(
-          'https://api.allorigins.win/raw?url=https://api.open-meteo.com/v1/forecast?$params',
-          'Open-Meteo (AllOrigins)',
-          locationName,
-        );
-      }
-
-      if (weatherData == null) {
-        debugPrint('❌ Все источники погоды недоступны');
-        return _fallbackWeatherData(locationName);
-      }
-
-      // ✅ Fallback: если API не вернул timezone (маловероятно), берём из региона
-      if (_timezone == null && _regionProfile != null) {
-        _timezone = _regionProfile!.timezone;
-        debugPrint('🕐 Timezone из RegionProfile: $_timezone');
+        debugPrint('❌ Все источники недоступны — сезонные данные по зоне');
+        return _fallbackWeatherData(latitude, longitude, locationName);
       }
 
       _lastData = weatherData;
 
-      await prefs.setString(_kLastFetch, DateTime.now().toIso8601String());
-      await prefs.setString(_kLastData, jsonEncode(weatherData.toJson()));
-      if (_timezone != null) {
-        await prefs.setString(_kTimezone, _timezone!);
+      if (!weatherData.isFallback) {
+        await prefs.setString(_kLastFetch, DateTime.now().toIso8601String());
+        await prefs.setString(_kLastData, jsonEncode(weatherData.toJson()));
       }
 
       await _updateIrrigationSettings(weatherData);
 
       debugPrint(
-          '✅ Погода загружена из ${weatherData.source}: ${weatherData.currentTemp.toStringAsFixed(1)}°C');
+          '✅ Погода: ${weatherData.currentTemp.toStringAsFixed(1)}°C из ${weatherData.source}'
+          '${weatherData.isFallback ? " (fallback)" : ""}');
       return weatherData;
     } catch (e, stack) {
-      debugPrint('❌ Критическая ошибка загрузки прогноза: $e');
+      debugPrint('❌ Критическая ошибка: $e');
       debugPrint('Stack: $stack');
       return null;
     }
   }
 
-  WeatherData _fallbackWeatherData(String locationName) {
-    debugPrint('⚠️ Используем fallback данные на основе сезона');
+  /// ✅ НОВОЕ: fallback-погода зависит от климатической зоны и месяца,
+  /// а не от «средней полосы». Для Алматы в январе будет +2, для Мурманска −15.
+  WeatherData _fallbackWeatherData(
+    double latitude,
+    double longitude,
+    String locationName,
+  ) {
+    final zone = _climateZone ??
+        ClimateZoneDetector.detect(
+          latitude: latitude,
+          longitude: longitude,
+          profile: _regionProfile,
+        );
 
     final now = DateTime.now();
     final month = now.month;
-
-    double temp;
-    if (month >= 12 || month <= 2) {
-      temp = -10;
-    } else if (month == 3 || month == 11) {
-      temp = 2;
-    } else if (month == 4 || month == 10) {
-      temp = 10;
-    } else if (month == 5 || month == 9) {
-      temp = 18;
-    } else {
-      temp = 25;
-    }
+    final temp = _monthlyAvgFor(zone, month);
+    final soilTemp = temp - 3;
 
     final forecast = <DailyForecast>[];
     for (int i = 0; i < 7; i++) {
       forecast.add(DailyForecast(
         date: now.add(Duration(days: i)),
-        tempMax: temp + 5,
-        tempMin: temp - 5,
+        tempMax: temp + 4,
+        tempMin: temp - 4,
         weatherCode: 3,
         precipitation: 0,
         daysAhead: i,
       ));
     }
 
+    final zoneName = ClimateZoneInfo.getDetails(zone).name;
+    debugPrint('⚠️ Сезонная заглушка: $zoneName, месяц $month, '
+        'средняя $temp°C');
+
     return WeatherData(
       currentTemp: temp,
-      soilTemp: temp - 3,
-      currentHumidity: 60,
+      soilTemp: soilTemp,
+      currentHumidity: 65,
       windSpeed: 10,
       precipitation: null,
       weatherCode: 3,
       forecast: forecast,
       lastUpdated: now,
       locationName: locationName,
-      source: 'Сезонные данные',
+      source: 'Сезонные данные ($zoneName)',
+      isFallback: true,
     );
+  }
+
+  /// Средние многолетние температуры по климатической зоне и месяцу.
+  /// Источник — климатические справочники, значения округлены до целых.
+  double _monthlyAvgFor(ClimateZone zone, int month) {
+    // Индекс 0 = январь, 11 = декабрь
+    const Map<ClimateZone, List<double>> table = {
+      ClimateZone.arctic: [
+        -28,
+        -28,
+        -26,
+        -18,
+        -8,
+        1,
+        8,
+        6,
+        0,
+        -10,
+        -20,
+        -26,
+      ],
+      ClimateZone.subarctic: [
+        -22,
+        -21,
+        -16,
+        -8,
+        0,
+        8,
+        14,
+        12,
+        5,
+        -3,
+        -12,
+        -19,
+      ],
+      ClimateZone.temperate: [
+        -8,
+        -7,
+        -2,
+        6,
+        13,
+        18,
+        21,
+        19,
+        13,
+        6,
+        0,
+        -5,
+      ],
+      ClimateZone.continental: [
+        -20,
+        -17,
+        -8,
+        3,
+        12,
+        18,
+        22,
+        20,
+        13,
+        4,
+        -8,
+        -17,
+      ],
+      ClimateZone.subtropical: [
+        4,
+        5,
+        9,
+        14,
+        19,
+        24,
+        28,
+        27,
+        23,
+        17,
+        11,
+        6,
+      ],
+    };
+    final row = table[zone] ?? table[ClimateZone.temperate]!;
+    return row[(month - 1).clamp(0, 11)];
   }
 
   Future<void> _updateIrrigationSettings(WeatherData data) async {
@@ -527,15 +615,12 @@ class WeatherService {
   Future<void> init() async {
     final prefs = await SharedPreferences.getInstance();
     final lastDataStr = prefs.getString(_kLastData);
-    final savedTz = prefs.getString(_kTimezone);
-    if (savedTz != null) _timezone = savedTz;
-
     if (lastDataStr != null) {
       try {
         _lastData = WeatherData.fromJson(
             jsonDecode(lastDataStr) as Map<String, dynamic>);
       } catch (e) {
-        debugPrint('⚠️ Ошибка загрузки кэшированной погоды: $e');
+        debugPrint('⚠️ Ошибка кэша: $e');
       }
     }
   }
@@ -544,7 +629,6 @@ class WeatherService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_kLastFetch);
     await prefs.remove(_kLastData);
-    // timezone НЕ удаляем — он остаётся валидным
     _lastData = null;
   }
 }

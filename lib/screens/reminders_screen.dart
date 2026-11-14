@@ -1,8 +1,10 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import '../data/planting_calendar.dart';
-import '../data/work_agenda.dart';
+
+import '../data/user_reminder.dart';
+import '../services/reminder_service.dart';
 import '../utils/notification_service.dart';
+import '../widgets/add_reminder_sheet.dart';
 
 class RemindersScreen extends StatefulWidget {
   const RemindersScreen({super.key});
@@ -14,7 +16,8 @@ class RemindersScreen extends StatefulWidget {
 class _RemindersScreenState extends State<RemindersScreen> {
   bool _enabled = false;
   bool _busy = false;
-  int _scheduled = 0;
+  bool _exactGranted = true;
+  List<UserReminder> _reminders = [];
 
   @override
   void initState() {
@@ -24,26 +27,24 @@ class _RemindersScreenState extends State<RemindersScreen> {
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
+    final exact = await NotificationService.canScheduleExact();
     if (!mounted) return;
     setState(() {
       _enabled = prefs.getBool('notifications_enabled') ?? false;
-      _scheduled = prefs.getInt('notifications_count') ?? 0;
+      _exactGranted = exact;
+      _reminders = ReminderService.instance.reminders;
     });
   }
 
   Future<void> _toggle(bool value) async {
-    setState(() {
-      _busy = true;
-    });
-    final prefs = await SharedPreferences.getInstance();
+    setState(() => _busy = true);
 
     if (value) {
-      final granted = await NotificationService.requestPermission();
-      if (!granted) {
+      // 1. Обычное разрешение на уведомления (Android 13+)
+      final notifGranted = await NotificationService.requestPermission();
+      if (!notifGranted) {
         if (!mounted) return;
-        setState(() {
-          _busy = false;
-        });
+        setState(() => _busy = false);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
@@ -53,225 +54,205 @@ class _RemindersScreenState extends State<RemindersScreen> {
         );
         return;
       }
+
+      // 2. Разрешение на точные уведомления (Android 12+)
+      if (!_exactGranted) {
+        await NotificationService.requestExactPermission();
+        _exactGranted = await NotificationService.canScheduleExact();
+      }
+
+      final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('notifications_enabled', true);
-      final n = await NotificationService.rescheduleAll();
-      if (!mounted) return;
-      setState(() {
-        _enabled = true;
-        _scheduled = n;
-        _busy = false;
-      });
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('🔔 Запланировано напоминаний: $n')),
-      );
+      await NotificationService.rescheduleAll();
     } else {
+      final prefs = await SharedPreferences.getInstance();
       await prefs.setBool('notifications_enabled', false);
       await NotificationService.cancelAll();
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _enabled = value;
+      _busy = false;
+    });
+  }
+
+  Future<void> _requestExact() async {
+    await NotificationService.requestExactPermission();
+    final granted = await NotificationService.canScheduleExact();
+    if (!mounted) return;
+    setState(() => _exactGranted = granted);
+    if (granted) {
+      await NotificationService.rescheduleAll();
       if (!mounted) return;
-      setState(() {
-        _enabled = false;
-        _scheduled = 0;
-        _busy = false;
-      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          backgroundColor: Color(0xFF2E7D32),
+          content: Text('✅ Точные уведомления включены'),
+        ),
+      );
+    } else {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+              'Разрешение не выдано. Уведомления будут приходить в течение часа.'),
+        ),
+      );
     }
   }
 
-  Future<void> _testNow() async {
-    await NotificationService.showTest();
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-          content: Text('Тестовое уведомление отправлено — проверьте шторку.')),
-    );
+  Future<void> _add() async {
+    await showAddReminderSheet(context);
+    _load();
   }
 
-  Future<void> _testScheduled() async {
-    await NotificationService.scheduleTest();
+  Future<void> _showRecommendation(UserReminder r) async {
+    final text = await ReminderService.instance.recommendation(r);
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-            'Тест по расписанию: уведомление придёт примерно через минуту.'),
-        duration: Duration(seconds: 4),
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final items = WorkAgenda.build(now);
-    final active = items.where((i) => i.isActive).toList();
-    final upcoming = items.where((i) => !i.isActive).toList();
-
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Ближайшие работы'),
-        centerTitle: true,
-        backgroundColor: Theme.of(context).colorScheme.primaryContainer,
-      ),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          Container(
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: Colors.green.withValues(alpha: 0.10),
-              borderRadius: BorderRadius.circular(14),
-              border: Border.all(color: Colors.green.withValues(alpha: 0.35)),
-            ),
-            child: Column(
-              children: [
-                SwitchListTile(
-                  value: _enabled,
-                  onChanged: _busy ? null : _toggle,
-                  title: const Text(
-                    'Напоминания о посадках',
-                    style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                  ),
-                  subtitle: Text(
-                    _busy
-                        ? 'Подождите…'
-                        : _enabled
-                            ? 'Включены • запланировано: $_scheduled'
-                            : 'Выключены — нажмите, чтобы включить',
-                    style: TextStyle(fontSize: 13, color: Colors.grey[700]),
-                  ),
-                  secondary: _busy
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.notifications_active,
-                          color: Colors.green),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _testNow,
-                        icon: const Icon(Icons.send, size: 18),
-                        label: const Text('Тест сейчас'),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: _testScheduled,
-                        icon: const Icon(Icons.schedule, size: 18),
-                        label: const Text('Тест через 1 мин'),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 16),
-          const Text(
-            'Календарь работ • $kRegionName',
-            style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Ориентиры: последние весенние заморозки ~$kLastSpringFrost, '
-            'первые осенние ~$kFirstAutumnFrost.',
-            style:
-                TextStyle(fontSize: 13, color: Colors.grey[600], height: 1.4),
-          ),
-          const SizedBox(height: 16),
-          if (active.isNotEmpty) ...[
-            _sectionHeader('🟢 СЕЙЧАС В РАБОТЕ'),
-            ...active.map(_card),
-            const SizedBox(height: 12),
-          ],
-          _sectionHeader('🗓️ БЛИЖАЙШИЕ ОКНА'),
-          ...upcoming.map(_card),
-          const SizedBox(height: 12),
-          Text(
-            'Сроки ориентировочные и могут сдвигаться на 1–2 недели — '
-            'следите за прогнозом погоды и температурой почвы. '
-            'Напоминания приходят за 3 дня до окна и в день его открытия.',
-            style:
-                TextStyle(fontSize: 12, color: Colors.grey[600], height: 1.4),
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('${r.cropEmoji} ${r.cropName}'),
+        content: Text(text),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Понятно'),
           ),
         ],
       ),
     );
   }
 
-  Widget _sectionHeader(String text) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: Text(
-        text,
-        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Напоминания'),
+        centerTitle: true,
       ),
-    );
-  }
-
-  Widget _card(WorkItem item) {
-    final s = item.stage;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 10),
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color:
-            item.isActive ? Colors.green.withValues(alpha: 0.12) : Colors.white,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: item.isActive
-              ? Colors.green.withValues(alpha: 0.5)
-              : Colors.grey.withValues(alpha: 0.25),
-        ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _add,
+        icon: const Icon(Icons.add),
+        label: const Text('Добавить'),
       ),
-      child: Row(
+      body: ListView(
+        padding: const EdgeInsets.all(16),
         children: [
-          Icon(
-            s.isPlanting ? Icons.eco : Icons.shopping_basket,
-            size: 26,
-            color: item.isActive ? Colors.green : Colors.grey[600],
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  '${item.cropName} — ${s.title}',
-                  style: const TextStyle(
-                      fontSize: 15, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  s.rangeText + (s.note.isNotEmpty ? ' • ${s.note}' : ''),
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-            decoration: BoxDecoration(
-              color: item.isActive
-                  ? Colors.green
-                  : Colors.orange.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              item.isActive
-                  ? 'СЕЙЧАС'
-                  : 'через ${item.daysUntil} ${WorkAgenda.daysWord(item.daysUntil)}',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.bold,
-                color: item.isActive ? Colors.white : Colors.orange[800],
+          Card(
+            child: SwitchListTile(
+              value: _enabled,
+              onChanged: _busy ? null : _toggle,
+              title: const Text('Напоминания о посадках'),
+              subtitle: Text(
+                _exactGranted
+                    ? 'Уведомление приходит точно в 9:00'
+                    : 'Уведомление приходит в течение часа после 9:00',
               ),
             ),
           ),
+          // ✅ Карточка точных уведомлений (только если не разрешено)
+          if (!_exactGranted) ...[
+            const SizedBox(height: 12),
+            Card(
+              color: Colors.amber.withValues(alpha: 0.1),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+                side: BorderSide(color: Colors.amber.withValues(alpha: 0.5)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Row(
+                      children: [
+                        Icon(Icons.alarm, color: Colors.orange, size: 22),
+                        SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Точные напоминания выключены',
+                            style: TextStyle(
+                                fontSize: 15, fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Без разрешения уведомление может прийти на 1–2 часа позже. '
+                      'Разрешите «Будильники и напоминания», чтобы получать '
+                      'сигнал ровно в 9:00.',
+                      style: TextStyle(
+                          fontSize: 12.5, color: Colors.grey[800], height: 1.4),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: _requestExact,
+                        icon: const Icon(Icons.alarm_on, size: 18),
+                        label: const Text('Разрешить точные напоминания'),
+                        style: FilledButton.styleFrom(
+                          backgroundColor: Colors.orange.shade800,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          if (_reminders.isEmpty)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 48),
+              child: Center(
+                child: Text(
+                  'Пока нет напоминаний.\nНажмите «Добавить», чтобы создать.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 14),
+                ),
+              ),
+            )
+          else
+            ..._reminders.map(
+              (r) => Card(
+                margin: const EdgeInsets.only(bottom: 8),
+                child: ListTile(
+                  leading:
+                      Text(r.cropEmoji, style: const TextStyle(fontSize: 24)),
+                  title: Text('${r.cropName}: ${r.title}'),
+                  subtitle: Text(
+                    '${r.targetDate.day}.${r.targetDate.month}.${r.targetDate.year} в 9:00',
+                  ),
+                  onTap: () => _showRecommendation(r),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Switch(
+                        value: r.isActive,
+                        onChanged: (v) async {
+                          await ReminderService.instance.toggle(r.id, v);
+                          await NotificationService.rescheduleAll();
+                          _load();
+                        },
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: () async {
+                          await ReminderService.instance.remove(r.id);
+                          await NotificationService.rescheduleAll();
+                          _load();
+                        },
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          const SizedBox(height: 80),
         ],
       ),
     );

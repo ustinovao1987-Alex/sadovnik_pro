@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import '../data/crop_care_data.dart';
 import '../data/crops_data.dart';
 
@@ -207,71 +207,80 @@ class _ProblemsScreenState extends State<ProblemsScreen> {
   Widget _problemCard(CropProblem p) {
     final kindColor = p.kind == ProblemKind.disease ? _berry : _soil;
     final dc = _dangerColor(p.danger);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: kindColor.withValues(alpha: 0.25)),
-        boxShadow: [
-          BoxShadow(
-              color: kindColor.withValues(alpha: 0.07),
-              blurRadius: 8,
-              offset: const Offset(0, 3)),
-        ],
-      ),
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          tilePadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-          childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
-          leading: CircleAvatar(
-            backgroundColor: kindColor.withValues(alpha: 0.14),
-            child: Icon(
-              p.kind == ProblemKind.disease
-                  ? Icons.coronavirus
-                  : Icons.bug_report,
-              color: kindColor,
-              size: 22,
-            ),
-          ),
-          title: Text(p.name,
-              style:
-                  const TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold)),
-          subtitle: Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Row(
+
+    // ✅ ИСПРАВЛЕНО: добавлен Material и ClipRRect, чтобы волна нажатия была видна
+    return Material(
+      color: Colors.transparent,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: kindColor.withValues(alpha: 0.25)),
+          boxShadow: [
+            BoxShadow(
+                color: kindColor.withValues(alpha: 0.07),
+                blurRadius: 8,
+                offset: const Offset(0, 3)),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: Theme(
+            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+            child: ExpansionTile(
+              tilePadding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              childrenPadding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+              leading: CircleAvatar(
+                backgroundColor: kindColor.withValues(alpha: 0.14),
+                child: Icon(
+                  p.kind == ProblemKind.disease
+                      ? Icons.coronavirus
+                      : Icons.bug_report,
+                  color: kindColor,
+                  size: 22,
+                ),
+              ),
+              title: Text(p.name,
+                  style: const TextStyle(
+                      fontSize: 15.5, fontWeight: FontWeight.bold)),
+              subtitle: Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 8, vertical: 3),
+                      decoration: BoxDecoration(
+                        color: dc.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Text(_dangerText(p.danger),
+                          style: TextStyle(
+                              fontSize: 11,
+                              fontWeight: FontWeight.bold,
+                              color: dc)),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      p.kind == ProblemKind.disease ? 'Болезнь' : 'Вредитель',
+                      style: TextStyle(fontSize: 12, color: Colors.grey[600]),
+                    ),
+                  ],
+                ),
+              ),
               children: [
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: dc.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(_dangerText(p.danger),
-                      style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                          color: dc)),
-                ),
-                const SizedBox(width: 8),
-                Text(
-                  p.kind == ProblemKind.disease ? 'Болезнь' : 'Вредитель',
-                  style: TextStyle(fontSize: 12, color: Colors.grey[600]),
-                ),
+                _block('Симптомы', Icons.visibility, kindColor, [p.symptoms]),
+                const SizedBox(height: 10),
+                _block('Что делать', Icons.healing, const Color(0xFFEF6C00),
+                    p.treatment,
+                    numbered: true),
+                const SizedBox(height: 10),
+                _block('Профилактика', Icons.shield, _leaf, p.prevention),
               ],
             ),
           ),
-          children: [
-            _block('Симптомы', Icons.visibility, kindColor, [p.symptoms]),
-            const SizedBox(height: 10),
-            _block('Что делать', Icons.healing, const Color(0xFFEF6C00),
-                p.treatment,
-                numbered: true),
-            const SizedBox(height: 10),
-            _block('Профилактика', Icons.shield, _leaf, p.prevention),
-          ],
         ),
       ),
     );

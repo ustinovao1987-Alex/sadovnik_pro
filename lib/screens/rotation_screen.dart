@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import '../data/rotation_advisor.dart';
 import '../data/crop_catalog.dart';
 import '../data/garden_store.dart';
@@ -35,7 +35,7 @@ class _RotationScreenState extends State<RotationScreen> {
             child: Column(
               children: [
                 DropdownButtonFormField<String>(
-                  value: _selectedPlot,
+                  initialValue: _selectedPlot,
                   decoration: const InputDecoration(
                       labelText: 'Выберите грядку',
                       border: OutlineInputBorder(),
@@ -48,7 +48,7 @@ class _RotationScreenState extends State<RotationScreen> {
                 ),
                 const SizedBox(height: 16),
                 DropdownButtonFormField<String>(
-                  value: _selectedCrop,
+                  initialValue: _selectedCrop,
                   decoration: const InputDecoration(
                       labelText: 'Культура для посадки',
                       border: OutlineInputBorder(),
@@ -79,8 +79,9 @@ class _RotationScreenState extends State<RotationScreen> {
   }
 
   Widget _buildAdvice(GardenStore store) {
-    if (_selectedCrop == null || _selectedPlot == null)
+    if (_selectedCrop == null || _selectedPlot == null) {
       return const SizedBox.shrink();
+    }
 
     final advice = RotationAdvisor.checkRotation(
         cropId: _selectedCrop!, plotId: _selectedPlot!, history: store.entries);

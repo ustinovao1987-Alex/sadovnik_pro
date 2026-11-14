@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../data/cities.dart';
@@ -121,23 +121,63 @@ class _HomeScreenState extends State<HomeScreen> {
     if (mounted) _load();
   }
 
+  bool _isLoadingWeather = false;
+
   Future<void> _bootstrap() async {
-    await GardenStore.instance.init();
-    await WeatherService.instance.init();
-    await _load();
+    if (_isLoadingWeather) return;
+    setState(() => _isLoadingWeather = true);
 
-    final s = IrrigationSettings.instance;
-    final weather = await WeatherService.instance.fetchAndUpdate(
-      latitude: s.latitude,
-      longitude: s.longitude,
-    );
+    try {
+      await GardenStore.instance.init();
+      await WeatherService.instance.init();
+      await _load();
 
-    if (mounted) {
+      final s = IrrigationSettings.instance;
+      final weather = await WeatherService.instance.fetchAndUpdate(
+        latitude: s.latitude,
+        longitude: s.longitude,
+      );
+
+      if (!mounted) return;
       setState(() {
         _weather = weather;
         _regionProfile = WeatherService.instance.regionProfile;
         _climateZone = WeatherService.instance.climateZone;
       });
+
+      if (weather != null && weather.isFallback) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: Colors.orange.shade800,
+              duration: const Duration(seconds: 4),
+              content: Row(
+                children: [
+                  const Icon(Icons.warning_amber_rounded,
+                      color: Colors.white, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      weather.source == 'Сезонные данные'
+                          ? 'Нет интернета. Показаны примерные данные погоды.'
+                          : 'Нет интернета. Показаны последние сохранённые данные.',
+                      style: const TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+              action: SnackBarAction(
+                label: 'Ок',
+                textColor: Colors.white,
+                onPressed: () {},
+              ),
+            ),
+          );
+        });
+      }
+    } finally {
+      if (mounted) setState(() => _isLoadingWeather = false);
     }
   }
 
@@ -191,6 +231,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // ✅ ИСПРАВЛЕНО: после смены города обновляем координаты и сбрасываем кэш погоды
   Future<void> _pickCity() async {
     final current = _city;
     if (current == null) return;
@@ -199,6 +240,8 @@ class _HomeScreenState extends State<HomeScreen> {
       MaterialPageRoute(builder: (_) => CityPickerScreen(currentCity: current)),
     );
     if (picked == null) return;
+
+    // 1. Сохраняем в SharedPreferences
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString('loc_name', picked.name);
     await prefs.setDouble('loc_lat', picked.lat);
@@ -209,16 +252,43 @@ class _HomeScreenState extends State<HomeScreen> {
     if (picked.timezone != null) {
       await prefs.setString('loc_timezone', picked.timezone!);
     }
+
+    // 2. ✅ ГЛАВНОЕ ИСПРАВЛЕНИЕ: принудительно обновляем координаты
+    // в IrrigationSettings НАПРЯМУЮ. Это гарантирует, что ClimateEngine
+    // увидит новый город, даже если SharedPreferences закэшировал старое.
+    IrrigationSettings.instance.latitude = picked.lat;
+    IrrigationSettings.instance.longitude = picked.lon;
+    // Дополнительно вызываем syncLatitude — на случай, если логика
+    // внутри него обновляет что-то ещё (например, погодный пресет).
+    await IrrigationSettings.instance.syncLatitude();
+    // Уведомляем слушателей, чтобы UI перерисовался с новыми координатами.
+    IrrigationSettings.instance.notifyListeners();
+
+    // 3. Сбрасываем кэш погоды — она привязана к старым координатам
+    await WeatherService.instance.clearCache();
+
+    // 4. Мгновенно перерисовываем экран с НОВЫМ городом
     if (!mounted) return;
     setState(() {
       _city = picked;
       _now = DateTime.now();
+      _weather = null; // «Погода загружается...»
+      _regionProfile = null;
+      _climateZone = null;
     });
+
+    // 5. Загружаем новую погоду в фоне
+    await _bootstrap();
   }
 
   Future<void> _open(Widget screen) async {
     await Navigator.push(context, MaterialPageRoute(builder: (_) => screen));
     await _load();
+    if (_weather != null && _weather!.isFallback) {
+      await _bootstrap();
+    } else {
+      setState(() {});
+    }
   }
 
   Future<void> _removeCrop(_CropInfo info) async {
@@ -490,8 +560,9 @@ class _HomeScreenState extends State<HomeScreen> {
     final next = agenda.isEmpty ? null : agenda.first;
 
     var visible = infos.where((i) {
-      if (_query.isNotEmpty && !i.crop.name.toLowerCase().contains(_query))
+      if (_query.isNotEmpty && !i.crop.name.toLowerCase().contains(_query)) {
         return false;
+      }
       if (_filter == 1) return i.due;
       if (_filter == 2) return i.favorable;
       return true;
@@ -515,7 +586,7 @@ class _HomeScreenState extends State<HomeScreen> {
           : FloatingActionButton.extended(
               backgroundColor: _leaf,
               foregroundColor: Colors.white,
-              onPressed: () => _open(AddCropScreen()),
+              onPressed: () => _open(const AddCropScreen()),
               icon: const Icon(Icons.add),
               label: const Text('Добавить культуру',
                   style: TextStyle(fontWeight: FontWeight.bold)),
@@ -538,32 +609,30 @@ class _HomeScreenState extends State<HomeScreen> {
                 backgroundColor: _night,
                 foregroundColor: Colors.white,
                 titleSpacing: 12,
-                title: const Flexible(
-                  child: Text(
-                    'СадовникPRO',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
-                  ),
+                title: const Text(
+                  'СадовникPRO',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 17),
                 ),
                 actions: [
                   IconButton(
                     tooltip: 'Дневник',
                     visualDensity: VisualDensity.compact,
-                    onPressed: () => _open(DiaryScreen()),
+                    onPressed: () => _open(const DiaryScreen()),
                     icon:
                         const Icon(Icons.menu_book, color: _moonGold, size: 21),
                   ),
                   IconButton(
                     tooltip: 'Мой сад',
                     visualDensity: VisualDensity.compact,
-                    onPressed: () => _open(AddCropScreen()),
+                    onPressed: () => _open(const AddCropScreen()),
                     icon: const Icon(Icons.yard, color: _sprout, size: 21),
                   ),
                   IconButton(
                     tooltip: 'Напоминания',
                     visualDensity: VisualDensity.compact,
-                    onPressed: () => _open(RemindersScreen()),
+                    onPressed: () => _open(const RemindersScreen()),
                     icon: Badge(
                       isLabelVisible: _notifEnabled,
                       backgroundColor: _sprout,
@@ -581,25 +650,24 @@ class _HomeScreenState extends State<HomeScreen> {
                   IconButton(
                     tooltip: 'Экспорт',
                     visualDensity: VisualDensity.compact,
-                    onPressed: () => _open(ExportScreen()), // Убран const
+                    onPressed: () => _open(const ExportScreen()),
                     icon: const Icon(Icons.file_download_outlined,
                         color: Colors.white70, size: 21),
                   ),
                   IconButton(
                     tooltip: 'Севооборот',
                     visualDensity: VisualDensity.compact,
-                    onPressed: () => _open(RotationScreen()), // Убран const
+                    onPressed: () => _open(const RotationScreen()),
                     icon: const Icon(Icons.swap_horiz,
                         color: Colors.white70, size: 21),
                   ),
                   IconButton(
                     tooltip: 'О приложении',
                     visualDensity: VisualDensity.compact,
-                    onPressed: () => _open(AboutScreen()),
+                    onPressed: () => _open(const AboutScreen()),
                     icon: const Icon(Icons.info_outline,
                         color: Colors.white70, size: 21),
                   ),
-                  const SizedBox(width: 2),
                 ],
               ),
               SliverToBoxAdapter(
@@ -651,7 +719,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           color: _leaf,
                           value: activeNow > 0 ? '$activeNow' : '—',
                           label: 'окон открыто',
-                          onTap: () => _open(RemindersScreen())),
+                          onTap: () => _open(const RemindersScreen())),
                       const SizedBox(width: 10),
                       _stat(
                           icon: Icons.water_drop,
@@ -665,7 +733,7 @@ class _HomeScreenState extends State<HomeScreen> {
                           color: _sun,
                           value: '${stats.plantings + stats.harvests}',
                           label: 'записей в дневнике',
-                          onTap: () => _open(DiaryScreen())),
+                          onTap: () => _open(const DiaryScreen())),
                     ],
                   ),
                 ),
@@ -797,29 +865,48 @@ class _HomeScreenState extends State<HomeScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(dateText.toUpperCase(),
-            style: TextStyle(
-                fontSize: 10.5,
-                letterSpacing: 1.1,
-                fontWeight: FontWeight.bold,
-                color: _moonGold.withValues(alpha: 0.9))),
+        Text(
+          dateText.toUpperCase(),
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 10.5,
+            letterSpacing: 1.1,
+            fontWeight: FontWeight.bold,
+            color: _moonGold.withValues(alpha: 0.9),
+          ),
+        ),
         const SizedBox(height: 8),
-        Text('${moon.lunarDay}-й лунный день',
-            style: const TextStyle(
-                fontSize: 22,
-                height: 1.1,
-                fontWeight: FontWeight.bold,
-                color: Colors.white)),
+        Text(
+          '${moon.lunarDay}-й лунный день',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            fontSize: 22,
+            height: 1.1,
+            fontWeight: FontWeight.bold,
+            color: Colors.white,
+          ),
+        ),
         const SizedBox(height: 6),
         Text(
-            '${moon.phaseName} • ${moon.illumination}% • ${moon.ageDays.toStringAsFixed(1)} дн.',
-            style: TextStyle(
-                fontSize: 12, color: Colors.white.withValues(alpha: 0.78))),
+          '${moon.phaseName} • ${moon.illumination}% • ${moon.ageDays.toStringAsFixed(1)} дн.',
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 12,
+            color: Colors.white.withValues(alpha: 0.78),
+          ),
+        ),
         const SizedBox(height: 10),
-        Wrap(spacing: 8, runSpacing: 6, children: [
-          _heroChip(Icons.north_east, 'Восход $rise'),
-          _heroChip(Icons.south_east, 'Заход $set')
-        ]),
+        Wrap(
+          spacing: 8,
+          runSpacing: 6,
+          children: [
+            _heroChip(Icons.north_east, 'Восход $rise'),
+            _heroChip(Icons.south_east, 'Заход $set'),
+          ],
+        ),
         const SizedBox(height: 10),
         InkWell(
           onTap: _pickCity,
@@ -827,21 +914,27 @@ class _HomeScreenState extends State<HomeScreen> {
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
-                color: _sprout.withValues(alpha: 0.18),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(color: _sprout.withValues(alpha: 0.45))),
+              color: _sprout.withValues(alpha: 0.18),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(color: _sprout.withValues(alpha: 0.45)),
+            ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
                 const Icon(Icons.location_on, size: 15, color: _sprout),
                 const SizedBox(width: 6),
                 Flexible(
-                    child: Text(city.name,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                            fontSize: 12.5,
-                            fontWeight: FontWeight.w600,
-                            color: Colors.white))),
+                  child: Text(
+                    city.name,
+                    overflow: TextOverflow.ellipsis,
+                    maxLines: 1,
+                    style: const TextStyle(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white,
+                    ),
+                  ),
+                ),
                 const SizedBox(width: 5),
                 Icon(Icons.edit,
                     size: 12, color: Colors.white.withValues(alpha: 0.6)),
@@ -854,16 +947,27 @@ class _HomeScreenState extends State<HomeScreen> {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
             decoration: BoxDecoration(
-                color: Colors.white.withValues(alpha: 0.15),
-                borderRadius: BorderRadius.circular(8)),
-            child: Text(
-              _climateZone != null
-                  ? '${_regionProfile!.name} • ${_climateZone!.name}'
-                  : _regionProfile!.name,
-              style: TextStyle(
-                  fontSize: 10,
-                  color: Colors.white.withValues(alpha: 0.8),
-                  fontWeight: FontWeight.w500),
+              color: Colors.white.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    _climateZone != null
+                        ? '${_regionProfile!.name} • ${_climateZone!.name}'
+                        : _regionProfile!.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 10,
+                      color: Colors.white.withValues(alpha: 0.8),
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
       ],
@@ -890,7 +994,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   fontSize: 11, fontWeight: FontWeight.bold, color: _leaf)),
         ),
         TextButton(
-            onPressed: () => _open(AddCropScreen(initialTab: 1)),
+            onPressed: () => _open(const AddCropScreen(initialTab: 1)),
             child: const Text('Управлять', style: TextStyle(fontSize: 13))),
       ],
     );
@@ -929,7 +1033,7 @@ class _HomeScreenState extends State<HomeScreen> {
             width: double.infinity,
             height: 52,
             child: ElevatedButton.icon(
-              onPressed: () => _open(AddCropScreen()),
+              onPressed: () => _open(const AddCropScreen()),
               icon: const Icon(Icons.add_circle_outline),
               label: const Text('Добавить культуру',
                   style:
@@ -1129,7 +1233,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Widget _nextWorkCard(WorkItem next) {
     return InkWell(
-      onTap: () => _open(RemindersScreen()),
+      onTap: () => _open(const RemindersScreen()),
       borderRadius: BorderRadius.circular(16),
       child: Container(
         padding: const EdgeInsets.all(15),

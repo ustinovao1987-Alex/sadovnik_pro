@@ -9,7 +9,7 @@ class RotationAdvisor {
   }) {
     final crop = CropCatalog.byId(cropId);
     if (crop == null) {
-      return RotationAdvice(
+      return const RotationAdvice(
           allowed: false,
           reason: 'Культура не найдена',
           level: AdviceLevel.error);
@@ -67,7 +67,7 @@ class RotationAdvisor {
       }
     }
 
-    return RotationAdvice(
+    return const RotationAdvice(
         allowed: true,
         reason: 'Участок свободен или давно не использовался',
         level: AdviceLevel.info);
@@ -75,7 +75,7 @@ class RotationAdvisor {
 
   static List<CropRecord> recommendCrops(
       {required String plotId, required List<DiaryEntry> history}) {
-    final allCrops = CropCatalog.all;
+    const allCrops = CropCatalog.all;
     final scores = <CropRecord, int>{};
 
     for (final crop in allCrops) {

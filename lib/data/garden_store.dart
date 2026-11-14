@@ -50,7 +50,7 @@ class DiaryEntry {
   final String unit;
   final int rating;
   final String note;
-  final String plotId; // Новое поле для севооборота
+  final String plotId;
 
   const DiaryEntry({
     required this.id,
@@ -279,7 +279,9 @@ class GardenStore extends ChangeNotifier {
 
   List<int> get availableYears {
     final years = <int>{DateTime.now().year, _season};
-    for (final e in _entries) years.add(e.date.year);
+    for (final e in _entries) {
+      years.add(e.date.year);
+    }
     final list = years.toList()..sort((a, b) => b.compareTo(a));
     return list;
   }
@@ -335,9 +337,9 @@ class GardenStore extends ChangeNotifier {
     final touched = <String>{};
     for (final e in list) {
       if (e.cropId.isNotEmpty) touched.add(e.cropId);
-      if (e.kind == DiaryKind.planting)
+      if (e.kind == DiaryKind.planting) {
         plantings++;
-      else if (e.kind == DiaryKind.harvest) {
+      } else if (e.kind == DiaryKind.harvest) {
         harvests++;
         if (e.unit == 'кг' && e.amount != null) kg += e.amount!;
         if (e.rating > 0) {
@@ -368,5 +370,115 @@ class GardenStore extends ChangeNotifier {
     final sorted = map.entries.toList()
       ..sort((a, b) => b.value.compareTo(a.value));
     return sorted.first;
+  }
+
+  // ✅ НОВОЕ: диагностический метод. Создаёт N тестовых записей,
+  // замеряет все этапы (генерация, кодирование, декодирование,
+  // запись в SharedPreferences, полный upsert) и откатывает всё назад.
+  // Данные пользователя НЕ затрагиваются.
+  Future<Map<String, int>> stressTest({int count = 300}) async {
+    final original = List<DiaryEntry>.from(_entries);
+    debugPrint(
+        '🧪 СТРЕСС-ТЕСТ: начинаем, записей в дневнике сейчас: ${original.length}');
+
+    // 1. Генерация объектов
+    final sw = Stopwatch()..start();
+    final testEntries = <DiaryEntry>[];
+    for (int i = 0; i < count; i++) {
+      testEntries.add(DiaryEntry(
+        id: 'stress_${i}_${DateTime.now().microsecondsSinceEpoch}',
+        cropId: 'crop_stress_$i',
+        cropName: 'Стресс-культура $i',
+        cropEmoji: '🌱',
+        kind: DiaryKind.values[i % 4],
+        date: DateTime.now().subtract(Duration(days: i)),
+        variety: 'Тестовый сорт $i',
+        method: 'Рассада',
+        amount: (i % 10).toDouble(),
+        unit: 'кг',
+        rating: i % 6,
+        note: 'Стресс-тестовая запись $i. Имитация реального текста заметки '
+            'для проверки парсинга JSON на больших объёмах.',
+        plotId: 'Грядка ${i % 5}',
+      ));
+    }
+    sw.stop();
+    final genMs = sw.elapsedMilliseconds;
+
+    // 2. Кодирование в JSON (как при _persistDiary)
+    sw.reset();
+    final json = jsonEncode(testEntries.map((e) => e.toJson()).toList());
+    sw.stop();
+    final encodeMs = sw.elapsedMilliseconds;
+    final jsonSizeKb = (json.length / 1024).round();
+
+    // 3. Декодирование + парсинг (как при init)
+    sw.reset();
+    final decoded = jsonDecode(json);
+    final parsed = <DiaryEntry>[];
+    for (final item in decoded as List) {
+      final e = DiaryEntry.fromJson(Map<String, dynamic>.from(item));
+      if (e != null) parsed.add(e);
+    }
+    sw.stop();
+    final decodeMs = sw.elapsedMilliseconds;
+
+    // 4. Запись в SharedPreferences (ключ только для теста)
+    sw.reset();
+    await _prefs?.setString('__stress_test__', json);
+    await _prefs?.remove('__stress_test__');
+    sw.stop();
+    final saveMs = sw.elapsedMilliseconds;
+
+    // 5. Полный сценарий: добавить в store + persist (как upsertEntry x300)
+    sw.reset();
+    _entries.addAll(testEntries);
+    _entries.sort((a, b) => b.date.compareTo(a.date));
+    await _persistDiary();
+    sw.stop();
+    final fullUpsertMs = sw.elapsedMilliseconds;
+
+    // 6. Откат: удаляем тестовые записи и сохраняем как было
+    _entries.clear();
+    _entries.addAll(original);
+    _entries.sort((a, b) => b.date.compareTo(a.date));
+    await _persistDiary();
+    notifyListeners();
+
+    final report = <String, int>{
+      'count': count,
+      'generation_ms': genMs,
+      'encode_ms': encodeMs,
+      'decode_parse_ms': decodeMs,
+      'sharedprefs_save_ms': saveMs,
+      'full_upsert_ms': fullUpsertMs,
+      'json_size_kb': jsonSizeKb,
+    };
+
+    debugPrint('');
+    debugPrint('════════════════════════════════════════════');
+    debugPrint('📊 РЕЗУЛЬТАТЫ СТРЕСС-ТЕСТА ($count записей)');
+    debugPrint('════════════════════════════════════════════');
+    debugPrint('Генерация объектов:        $genMs мс');
+    debugPrint('Кодирование JSON:          $encodeMs мс');
+    debugPrint(
+        'Декодирование + парсинг:   $decodeMs мс  ← ВАЖНО (каждый запуск)');
+    debugPrint(
+        'Сохранение в SharedPrefs:  $saveMs мс  ← ВАЖНО (каждое изменение)');
+    debugPrint('Полный цикл (upsert+save): $fullUpsertMs мс');
+    debugPrint('Размер JSON:               $jsonSizeKb КБ');
+    debugPrint('════════════════════════════════════════════');
+    debugPrint('ВЕРДИКТ:');
+    if (decodeMs < 200 && fullUpsertMs < 500) {
+      debugPrint('🟢 ОТЛИЧНО — SharedPreferences справляется, Hive НЕ НУЖЕН');
+    } else if (decodeMs < 500 && fullUpsertMs < 1500) {
+      debugPrint('🟡 ТЕРПИМО — можно жить, Hive под вопросом');
+    } else {
+      debugPrint('🔴 ПЛОХО — пришло время для Hive');
+    }
+    debugPrint('════════════════════════════════════════════');
+    debugPrint('');
+
+    return report;
   }
 }

@@ -1,8 +1,7 @@
 import 'crop_catalog.dart';
-
-const String kRegionName = 'Самарская область';
-const String kLastSpringFrost = '10–20 мая';
-const String kFirstAutumnFrost = '25 сентября – 5 октября';
+import 'climate_engine.dart';
+import 'irrigation.dart';
+import 'region_profile.dart';
 
 const List<String> _monthsGen = [
   'января',
@@ -100,15 +99,14 @@ class PlantingCalendarUtils {
     return null;
   }
 
-  /// 🌍 Расчёт окон от даты последних заморозков региона.
-  /// Меняем CropCatalog.climate — и календарь работает в любом регионе.
-  ///
-  /// ВАЖНО О ТОЧКЕ ОТСЧЁТА ДНЕЙ ДО УБОРКИ:
-  /// - Для рассадных культур (hasSeedling=true): maturity отсчитывается от высадки рассады.
-  /// - Для грунтовых культур (посев семенами): maturity отсчитывается от посева.
-  static CropCalendar fromRecord(CropRecord r) {
+  static CropCalendar fromRecord(CropRecord r, {RegionProfile? climate}) {
     final year = DateTime.now().year;
-    final frost = CropCatalog.climate.lastFrost(year);
+    final profile = climate ??
+        ClimateEngine.resolve(
+          IrrigationSettings.instance.latitude,
+          IrrigationSettings.instance.longitude,
+        );
+    final frost = profile.lastSpringFrost(year);
 
     PlantingStage stage(String title, DateTime from, int window,
         {bool planting = true, String note = ''}) {
@@ -131,8 +129,7 @@ class PlantingCalendarUtils {
     if (r.hasSeedling) {
       final seedling = transplant.subtract(Duration(days: r.seedlingDays));
       stages.add(stage('Посев на рассаду', seedling, 12,
-          note:
-              'возраст рассады ${r.seedlingDays} дней, прорастание от +${r.germinationTemp} °C'));
+          note: 'возраст рассады ${r.seedlingDays} дней'));
       stages.add(stage('Пикировка и подкормка рассады',
           seedling.add(const Duration(days: 18)), 12));
       if (r.greenhouse) {
@@ -146,11 +143,10 @@ class PlantingCalendarUtils {
           note: 'почва от +${r.plantingTemp} °C, глубина ${r.sowDepth} см'));
     }
 
-    // Второе окно посева (для культур с повторным посевом)
     if (r.secondSowOffset != null) {
       final secondGround = frost.add(Duration(days: r.secondSowOffset!));
       stages.add(stage('Повторный посев в грунт', secondGround, 14,
-          note: 'почва от +${r.plantingTemp} °C, глубина ${r.sowDepth} см'));
+          note: 'почва от +${r.plantingTemp} °C'));
     }
 
     if (r.winterSow) {
@@ -159,7 +155,6 @@ class PlantingCalendarUtils {
     }
 
     if (r.maturity < 300) {
-      // Точка отсчёта: для рассадных — от высадки, для грунтовых — от посева
       final base = r.hasSeedling ? transplant : ground;
       final harvest = base.add(Duration(days: r.maturity));
       stages.add(stage('Сбор урожая', harvest, 35,
@@ -198,8 +193,7 @@ class PlantingCalendarUtils {
   }) {
     if (cal == null || status == null) {
       return 'Для этой культуры пока нет точного календаря. Общий ориентир: '
-          'высаживайте после последних заморозков ($kLastSpringFrost), '
-          'когда почва прогреется. Следите за прогнозом погоды.';
+          'высаживайте после последних заморозков. Следите за прогнозом.';
     }
     if (status.active.isNotEmpty) {
       final stage = status.active.first;
@@ -216,8 +210,7 @@ class PlantingCalendarUtils {
       if (phaseGood) {
         return '$base Луна в подходящей фазе — по традиции отличный день!';
       }
-      return '$base Фаза Луны не идеальна по традиции, но климатическое окно '
-          'важнее — работать можно.';
+      return '$base Фаза Луны не идеальна, но климатическое окно важнее — работать можно.';
     }
     final next = status.next;
     if (next == null) {
@@ -235,8 +228,6 @@ class PlantingCalendarUtils {
     return 'дней';
   }
 
-  /// Подробные ручные календари для базовых культур.
-  /// Эти календари имеют приоритет над автогенерацией из каталога.
   static const List<CropCalendar> _manual = [
     CropCalendar(key: 'помидор', name: 'Помидоры', stages: [
       PlantingStage(
@@ -637,7 +628,6 @@ class PlantingCalendarUtils {
   static List<CropCalendar> get kPlantingCalendars => _manual;
 }
 
-/// Совместимость: лента работ использует этот список.
 List<CropCalendar> get kPlantingCalendars {
   final out = <CropCalendar>[];
   for (final r in CropCatalog.all) {

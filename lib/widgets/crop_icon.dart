@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+﻿import 'package:flutter/material.dart';
 
 /// Виджет для отображения иконки культуры.
 /// Сначала пытается загрузить PNG из assets/icons/{id}.png.
